@@ -189,6 +189,8 @@ DimPlot(scRNA.seurat, reduction = "umap", cols = cols)
 
 We can use the seurat function FindAllMarkers to identify the top DE markers per any of the cluster compared to all other cells. We can further filter these to only show the top up-regulated ones.
 
+### Label annotation
+
 ```{r}
 scRNA.cluster_markers <- FindAllMarkers(scRNA.seurat, only.pos = T, min.pct = 0.25, logfc.threshold = 0.25)
 
@@ -197,9 +199,106 @@ scRNA.cluster_markers <- FindAllMarkers(scRNA.seurat, only.pos = T, min.pct = 0.
 
 Semi-automatic cell type annotation is performed using [SingleR](https://bioconductor.org/packages/devel/bioc/vignettes/SingleR/inst/doc/SingleR.html) and the [celldex](https://bioconductor.org/packages/3.17/data/experiment/html/celldex.html) reference sets.
 
+A brief description of the SingleR method from the book
+
+[*SingleR*](https://bioconductor.org/packages/3.17/SingleR) can be considered a robust variant of nearest-neighbors classification,
+with some tweaks to improve resolution for closely related labels.
+For each test cell:
+
+1.  We compute the Spearman correlation between its expression profile and that of each reference sample.
+    The use of Spearman\'s correlation provides a measure of robustness to batch effects across datasets.
+    The calculation only uses the union of marker genes identified by pairwise comparisons between labels in the reference data,
+    so as to improve resolution of separation between labels.
+
+2.  We define the per-label score as a fixed quantile (by default, 0.8) of the correlations across all samples with that label.
+    This accounts for differences in the number of reference samples for each label,
+    which interferes with simpler flavors of nearest neighbor classification;
+    it also avoids penalizing classifications to heterogeneous labels by only requiring a good match to a minority of samples.
+
+3.  We repeat the score calculation for all labels in the reference dataset.
+    The label with the highest score is used as [*SingleR*](https://bioconductor.org/packages/3.17/SingleR)\'s prediction for this cell.
+
+4.  We optionally perform a fine-tuning step to improve resolution between closely related labels.
+    The reference dataset is subsetted to only include labels with scores close to the maximum;
+    scores are recomputed using only marker genes for the subset of labels, thus focusing on the most relevant features;
+    and this process is iterated until only one label remains.
+
+For our data set including mainly peripheral and bone marrow derived myeloid cells, the Noversthern reference map seems to be the best choice.
+
 ```{r}
+ref <- celldex::NovershternHematopoieticData()
+
+library(SummarizedExperiment)
+
+colData(ref) %>% 
+  as_tibble() %>% 
+  distinct(label.fine, .keep_all = T)
+```
+
+We can either get cell- or cluster-specific labels
+
+```{r}
+SingleR::SingleR(test = GetAssayData(scRNA.seurat), ref = ref, labels = colData(ref)$label.fine) -> scRNA.singleR_cell_labels
+
+scRNA.seurat[["SingleR.cell_labels"]] <- scRNA.singleR_cell_labels$pruned.labels
+
+SingleR::SingleR(test = GetAssayData(scRNA.seurat), ref = ref, clusters = Idents(scRNA.seurat),labels = colData(ref)$label.fine) -> scRNA.singleR_cluster_labels
+
+scRNA.seurat[["SingleR.cluster_labels"]] <- cluster_to_label[Idents(scRNA.seurat)]
+
+```
+
+First, we can plot a histrogram of the per-cell label scores
+
+```{r}
+scRNA.singleR_cell_labels %>% 
+  SingleR::plotScoreHeatmap()
+```
+
+This heatmap gives a feeling for the in-label uncertainty. Hence for every label (column) we can investigate the spread of the scores with a very broad spread suggesting low certainty in the label assignment (in this case high certainty in myeloid cells and lower certainty within the T-cell compartments).
+
+Label pruning takes into considerations labels with scores below a delta threshold where delta is defined as the difference between the highest score (e.g. the "correct"/matching label) and the median score (the non-matching label). We can see how many labels are removed after pruning by comparing the number of primary to empty pruned labels.
+
+```{r}
+scRNA.singleR_cell_labels %>% 
+  as_tibble() %>% 
+  {
+    table(.$labels, is.na(.$pruned.labels))
+  }
+```
+
+Finally, we can visualize the per label score distribution and also the delta threshold used for pruning
+
+```{r}
+SingleR::plotDeltaDistribution(scRNA.singleR_cell_labels)
+```
+
+Another interesting aspect is to compare the cell-specific labels to the results of the unsupervised clustering. It seems reasonable to assume that labels should be a main driver of variance and hence within cluster labels should be quite similar while between cluster labels should not. This aspect can be formally tested using the the adjusted rand index (ARI) which calculates the "agreement" of within cluster cell labels. Generally, an ARI \> 0.5 is interpreted as good cluster agreement.
+
+```{r}
+bluster::pairwiseRand(Idents(scRNA.seurat), scRNA.singleR_cell_labels$labels, mode = "index")
+```
+
+Finally, we can plot a heatmap comparing the per cluster labels.
+
+```{r}
+log10(table(Idents(scRNA.seurat), scRNA.singleR_cell_labels$labels)+10) %>% 
+  ComplexHeatmap::Heatmap()
+```
+
+And the cell-wide to the cluster-wide labels
+
+```{r}
+scRNA.singleR_cluster_labels %>% 
+  as_tibble() %>% 
+  rowid_to_column("cluster") %>% 
+  mutate(cluster = cluster-1) %>% 
+  dplyr::select(cluster, pruned.labels) %>% 
+  deframe() -> cluster_to_label 
 
 
+log10(table(scRNA.singleR_cell_labels$pruned.labels, cluster_to_label[Idents(scRNA.seurat)])+10) %>% 
+  ComplexHeatmap::Heatmap()
 ```
 
 # Saving/Loading HDF5
