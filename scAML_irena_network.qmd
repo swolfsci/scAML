@@ -1,0 +1,168 @@
+---
+title: "scAML_IReNA"
+format: gfm
+editor: visual
+bibliography: references.bib
+---
+
+# Introduction
+
+We aim to construct a modularized gene network analysis using IReNA [@jiang2022]. To this end, we follow the vignette at https://jiang-junyao.github.io/IReNA/scRNA-seq-preprocessing#seurat-object building upon our seurat object which stores scRNA-seq data from MPAL and healthy bone marrow mononucleated cells.
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(IReNA)
+
+# there's an error in monocle2 matrix assignment, see https://github.com/cole-trapnell-lab/monocle-release/issues/434
+# this error is fixed in the manual binaries of the package
+devtools::load_all("c:/Users/wolf-/AppData/Local/R/win-library/4.2/monocle")
+
+TF_motifs <-  Tranfac201803_Hs_MotifTFsF
+```
+
+We first need to add a pseudo-time column to the metadata; IReNA does this by using get_pseudotime from monocle2. Setting gene.use = NULL will only use most variable genes
+
+```{r}
+irena.seurat_with_time <- readRDS("seurat_with_time.rds")
+```
+
+Since using all 12.000 single cells allocates to much ram, we subset on 1000 cells.
+
+```{r}
+BMMC.scRNA.monocle <- IReNA::get_pseudotime(BMMC.scRNA.seurat[,1:1000], gene.use = NULL)
+
+BMMC.scRNA.seurat.subset_with_pseudotime <- add_pseudotime(BMMC.scRNA.seurat[,1:1000], BMMC.scRNA.monocle)
+```
+
+```{r}
+BMMC.scRNA.monocle <- detectGenes(BMMC.scRNA.monocle, min_expr = 1) # identify minimally expressed genes
+BMMC.scRNA.monocle <- estimateDispersions(BMMC.scRNA.monocle) # estimate genes dispersion for DE analysis
+```
+
+```{r}
+BMMC.scRNA.monocle.diffGenes <- differentialGeneTest(BMMC.scRNA.monocle, fullModelFormulaStr = "~Pseudotime", relative_expr = T) # DE expressed genes by pseudotime
+
+sig_genes <- subset(BMMC.scRNA.monocle.diffGenes, qval < 0.05)
+sig_genes <- subset(sig_genes, num_cells_expressed > 0.1)
+
+Candidate_TFs <- c()
+for (i in 1:nrow(TF_motifs)) {
+  gene1 <- strsplit(TF_motifs[i,4],';')[[1]]
+  Candidate_TFs <- c(Candidate_TFs,gene1)
+}
+
+BMMC.scRNA.monocle.expressedTFs <- rownames(extract_expressed_TFs(BMMC.scRNA.seurat.subset_with_pseudotime, Candidate_TFs))
+
+BMMC.scRNA.monocle.expressedTFs <- BMMC.scRNA.monocle.expressedTFs[!BMMC.scRNA.monocle.expressedTFs %in% rownames(sig_genes)]
+
+BMMC.scRNA.seurat.subset_with_pseudotime <- subset(BMMC.scRNA.seurat.subset_with_pseudotime, features = c(BMMC.scRNA.monocle.expressedTFs, rownames(sig_genes)))
+```
+
+We create 50 bins based on the pseudotime and transfer the feature expression as a smoothed function over these bins
+
+```{r}
+get_SmoothByBin_PseudotimeExp(BMMC.scRNA.seurat.subset_with_pseudotime) %>% 
+  filter_expression_profile(FC = 0.01) -> BMMC.scRNA.seurat.subset_with_pseudotime.filtered_expression
+
+BMMC.scRNA.seurat.subset_with_pseudotime.filtered_expression %>% clustering_Kmeans(K1 = 6) -> BMMC.scRNA.seurat.subset_with_pseudotime.clustering
+
+rownames(BMMC.scRNA.seurat.subset_with_pseudotime.clustering) %>% HGNChelper::checkGeneSymbols() -> corrected_gene_names
+
+BMMC.scRNA.seurat.subset_with_pseudotime.clustering %>% bind_cols("corrected_gene" = corrected_gene_names$Suggested.Symbol) %>% remove_rownames() %>% filter(!is.na(corrected_gene)) %>% column_to_rownames("corrected_gene") -> BMMC.scRNA.seurat.subset_with_pseudotime.clustering
+
+clusterProfiler::bitr(corrected_gene_names$Suggested.Symbol, fromType = "SYMBOL", toType = "ENSEMBL", drop = F, OrgDb = "org.Hs.eg.db") %>% distinct(SYMBOL, .keep_all = T) %>% filter(!is.na(ENSEMBL)) %>% column_to_rownames("ENSEMBL") -> ensembl_to_symbol
+
+ensembl_to_symbol %>% bind_cols(ensembl_to_symbol, ensembl_to_symbol) -> ensembl_to_symbol
+
+
+BMMC.scRNA.seurat.subset_with_pseudotime.clustering %>% add_ENSID(GeneInf1 = ensembl_to_symbol) -> BMMC.scRNA.seurat.subset_with_pseudotime.clustering
+```
+
+To construct the correlation network, IReNA needs ENSEMBL instead of SYMBOLS as rownames. Since some SYMBOLS are outdated (e.g. YARS instead of YARS1) we use HGNC helper to fix those.
+
+```{r}
+
+
+
+BMMC.scRNA.seurat.subset_with_pseudotime.clustering %>%
+  as_tibble(rownames = "Symbol") %>%
+  dplyr::select(Symbol) -> name_vector
+
+
+clusterProfiler::bitr(geneID = name_vector$Symbol, fromType = "SYMBOL", toType = "ENSEMBL", OrgDb = "org.Hs.eg.db", drop = F) -> name_vector
+
+HGNChelper::checkGeneSymbols(name_vector[is.na(name_vector$ENSEMBL),]$SYMBOL) -> hugo_corrected
+
+clusterProfiler::bitr(geneID = hugo_corrected$Suggested.Symbol, fromType = "SYMBOL", toType = "ENSEMBL", OrgDb = "org.Hs.eg.db", drop = F) -> hugo_corrected_ensembl
+
+hugo_corrected %>%
+  left_join(hugo_corrected_ensembl, by=c("Suggested.Symbol" = "SYMBOL")) -> hugo_corrected
+
+name_vector %>%
+  left_join(hugo_corrected, by=c("SYMBOL" = "x")) %>%
+  mutate(ENSEMBL = case_when(!is.na(ENSEMBL.x) ~ ENSEMBL.x,
+                             TRUE ~ ENSEMBL.y)) -> name_vector_corrected
+
+name_vector_corrected %>% distinct(SYMBOL, .keep_all = T) -> name_vector_corrected
+
+BMMC.scRNA.seurat.subset_with_pseudotime.clustering %>%
+  as_tibble(rownames = "SYMBOL") %>%
+  left_join(name_vector_corrected, by=c("SYMBOL")) %>%
+  filter(!is.na(ENSEMBL)) %>%
+  column_to_rownames("ENSEMBL") %>%
+  dplyr::select(-ENSEMBL.x:-ENSEMBL.y) -> BMMC.scRNA.seurat.subset_with_pseudotime.clustering
+
+```
+
+```{r}
+
+# BMMC.scRNA.seurat.subset_with_pseudotime.clustering <- add_ENSID(BMMC.scRNA.seurat.subset_with_pseudotime.clustering, Spec1 = "Hs")
+
+# GENIE3 takes up a lot of calculation time and is not feasible on my laptop. An faster approximation is possible by using a simple correlation network via get_cor
+
+# BMMC.scRNA.seurat.subset_with_pseudotime.genie3_mat <- GENIE3::GENIE3(as.matrix(BMMC.scRNA.seurat.subset_with_pseudotime@assays$RNA@data), nCores = parallel::detectCores(logical = T) - 1)
+
+BMMC.scRNA.seurat.cor_network <- get_cor(BMMC.scRNA.seurat.subset_with_pseudotime.clustering, motif = TF_motifs, correlation_filter = 0.6, start_column = 4)
+```
+
+The data frame contains a TF to TF pearson correlation network with a correlation coefficient of at least 0.6.
+
+```{r}
+distinct(BMMC.scRNA.seurat.cor_network, TargetSymbol)
+```
+
+We can refine the network by checking if transcription starting sides of the Target genes actually contain motifs of the TFs which are identified as highly correlated. For this, we first need to extract the chromosomal locations for each of the TFs.
+
+```{r}
+gtf <- read.delim("Homo_sapiens.GRCh38.108.gtf", header = F, comment.char = "#")
+gtf[,1] <- paste0('chr',gtf[,1])
+
+gene_tss <- get_tss_region(gtf, rownames(BMMC.scRNA.seurat.subset_with_pseudotime.clustering))
+```
+
+```{r}
+refdir = "/home/user/genome/hg38/hg38.fa"
+fimodir = "fimo"
+outputdir1 = "home/user/fimo/"
+motifdir = "home/user/fimo/memomotif"
+
+#list(gene_tss, TF_motifs) %>% saveRDS("gene_tss_tf_motifs.RDS")
+find_motifs_targetgenes(gene_tss, motif = TF_motifs, refdir = refdir, fimodir, outputdir1, motifdor)
+```
+
+Currently, I don' t have a good way to make fimo work on my windows machine (not even through WSL2) so we skip this step.
+
+```{r}
+IReNA::network_analysis(BMMC.scRNA.seurat.cor_network, Kmeans_result = BMMC.scRNA.seurat.subset_with_pseudotime.clustering, TFFDR1 = 10 , TFFDR2 = 10) -> BMMC.scRNA.seurat.irena_network
+```
+
+```{r}
+IReNA::plot_tf_network(BMMC.scRNA.seurat.irena_network)
+```
+
+```{r}
+enrichment_go <- enrich_module(BMMC.scRNA.seurat.subset_with_pseudotime.clustering, org.db = "org.Hs.eg.db", enrich.db = "GO")
+
+plot_intramodular_network(BMMC.scRNA.seurat.irena_network, enrichment = enrichment_go) 
+```
