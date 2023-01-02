@@ -201,44 +201,45 @@ Semi-automatic cell type annotation is performed using [SingleR](https://biocond
 
 A brief description of the SingleR method from the book
 
-[*SingleR*](https://bioconductor.org/packages/3.17/SingleR) can be considered a robust variant of nearest-neighbors classification,
-with some tweaks to improve resolution for closely related labels.
-For each test cell:
+[*SingleR*](https://bioconductor.org/packages/3.17/SingleR) can be considered a robust variant of nearest-neighbors classification, with some tweaks to improve resolution for closely related labels. For each test cell:
 
-1.  We compute the Spearman correlation between its expression profile and that of each reference sample.
-    The use of Spearman\'s correlation provides a measure of robustness to batch effects across datasets.
-    The calculation only uses the union of marker genes identified by pairwise comparisons between labels in the reference data,
-    so as to improve resolution of separation between labels.
+1.  We compute the Spearman correlation between its expression profile and that of each reference sample. The use of Spearman's correlation provides a measure of robustness to batch effects across datasets. The calculation only uses the union of marker genes identified by pairwise comparisons between labels in the reference data, so as to improve resolution of separation between labels.
 
-2.  We define the per-label score as a fixed quantile (by default, 0.8) of the correlations across all samples with that label.
-    This accounts for differences in the number of reference samples for each label,
-    which interferes with simpler flavors of nearest neighbor classification;
-    it also avoids penalizing classifications to heterogeneous labels by only requiring a good match to a minority of samples.
+2.  We define the per-label score as a fixed quantile (by default, 0.8) of the correlations across all samples with that label. This accounts for differences in the number of reference samples for each label, which interferes with simpler flavors of nearest neighbor classification; it also avoids penalizing classifications to heterogeneous labels by only requiring a good match to a minority of samples.
 
-3.  We repeat the score calculation for all labels in the reference dataset.
-    The label with the highest score is used as [*SingleR*](https://bioconductor.org/packages/3.17/SingleR)\'s prediction for this cell.
+3.  We repeat the score calculation for all labels in the reference dataset. The label with the highest score is used as [*SingleR*](https://bioconductor.org/packages/3.17/SingleR)'s prediction for this cell.
 
-4.  We optionally perform a fine-tuning step to improve resolution between closely related labels.
-    The reference dataset is subsetted to only include labels with scores close to the maximum;
-    scores are recomputed using only marker genes for the subset of labels, thus focusing on the most relevant features;
-    and this process is iterated until only one label remains.
+4.  We optionally perform a fine-tuning step to improve resolution between closely related labels. The reference dataset is subsetted to only include labels with scores close to the maximum; scores are recomputed using only marker genes for the subset of labels, thus focusing on the most relevant features; and this process is iterated until only one label remains.
 
-For our data set including mainly peripheral and bone marrow derived myeloid cells, the Noversthern reference map seems to be the best choice.
+For our data set including mainly peripheral and bone marrow derived myeloid cells, the Noversthern and BLUEPRINT reference maps seems to be the best choice. To harmonize labels we stick to the cell ontology labels.
 
 ```{r}
-ref <- celldex::NovershternHematopoieticData()
+ref_noversht <- celldex::NovershternHematopoieticData(cell.ont = "nonna")
+ref_blueprint <- celldex::BlueprintEncodeData(cell.ont = "nonna")
 
 library(SummarizedExperiment)
 
-colData(ref) %>% 
+
+cell_ontology <- ontoProc::getCellOnto()
+
+colData(ref_blueprint) %>% 
   as_tibble() %>% 
-  distinct(label.fine, .keep_all = T)
+  distinct(label.fine, .keep_all = T) %>% 
+  mutate(cell_ont = cell_ontology$name[label.ont])
+
+colData(ref_noversht) %>% 
+  as_tibble() %>% 
+  distinct(label.fine, .keep_all = T) %>% 
+  mutate(cell_ont = cell_ontology$name[label.ont])
+
+
+
 ```
 
 We can either get cell- or cluster-specific labels
 
 ```{r}
-SingleR::SingleR(test = GetAssayData(scRNA.seurat), ref = ref, labels = colData(ref)$label.fine) -> scRNA.singleR_cell_labels
+SingleR::SingleR(test = GetAssayData(scRNA.seurat), ref = list(ref_noversht, ref_blueprint), labels = list(ref_noversht$label.ont, ref_blueprint$label.ont), de.method = "classic") -> scRNA.singleR_cell_labels
 
 scRNA.seurat[["SingleR.cell_labels"]] <- scRNA.singleR_cell_labels$pruned.labels
 
@@ -276,13 +277,14 @@ SingleR::plotDeltaDistribution(scRNA.singleR_cell_labels)
 Another interesting aspect is to compare the cell-specific labels to the results of the unsupervised clustering. It seems reasonable to assume that labels should be a main driver of variance and hence within cluster labels should be quite similar while between cluster labels should not. This aspect can be formally tested using the the adjusted rand index (ARI) which calculates the "agreement" of within cluster cell labels. Generally, an ARI \> 0.5 is interpreted as good cluster agreement.
 
 ```{r}
-bluster::pairwiseRand(Idents(scRNA.seurat), scRNA.singleR_cell_labels$labels, mode = "index")
+bluster::pairwiseRand(Idents(scRNA.seurat), scRNA.singleR_cell_labels$pruned.labels, mode = "index")
 ```
 
 Finally, we can plot a heatmap comparing the per cluster labels.
 
 ```{r}
-log10(table(Idents(scRNA.seurat), scRNA.singleR_cell_labels$labels)+10) %>% 
+log10(table(Idents(scRNA.seurat), cell_ontology$name[scRNA.singleR_cell_labels$pruned.labels])+10) %>% 
+  t() %>% 
   ComplexHeatmap::Heatmap()
 ```
 
