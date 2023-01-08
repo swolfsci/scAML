@@ -211,7 +211,7 @@ A brief description of the SingleR method from the book
 
 4.  We optionally perform a fine-tuning step to improve resolution between closely related labels. The reference dataset is subsetted to only include labels with scores close to the maximum; scores are recomputed using only marker genes for the subset of labels, thus focusing on the most relevant features; and this process is iterated until only one label remains.
 
-For our data set including mainly peripheral and bone marrow derived myeloid cells, the Noversthern and BLUEPRINT reference maps seems to be the best choice. To harmonize labels we stick to the cell ontology labels.
+For our data set including mainly peripheral and bone marrow derived myeloid cells, the Noversthern and BLUEPRINT reference maps seems to be the best choice. To harmonize labels we stick to the [cell ontology](http://bioconductor.org/books/devel/SingleRBook/exploiting-the-cell-ontology.html) labels.
 
 ```{r}
 ref_noversht <- celldex::NovershternHematopoieticData(cell.ont = "nonna")
@@ -236,17 +236,30 @@ colData(ref_noversht) %>%
 
 ```
 
-We can either get cell- or cluster-specific labels
+We can either get cell- or cluster-specific labels. The SingleR vignette recommends using the cell-level instead of the cluster-level assignments due to its much higher information content.
 
 ```{r}
 SingleR::SingleR(test = GetAssayData(scRNA.seurat), ref = list(ref_noversht, ref_blueprint), labels = list(ref_noversht$label.ont, ref_blueprint$label.ont), de.method = "classic") -> scRNA.singleR_cell_labels
 
+# add the cell-level labels as ontology terms
 scRNA.seurat[["SingleR.cell_labels"]] <- scRNA.singleR_cell_labels$pruned.labels
 
-SingleR::SingleR(test = GetAssayData(scRNA.seurat), ref = ref, clusters = Idents(scRNA.seurat),labels = colData(ref)$label.fine) -> scRNA.singleR_cluster_labels
+# and as clearnames
+scRNA.seurat[["SingleR.cell_labels.clearname"]] <- cell_ontology$name[scRNA.singleR_cell_labels$pruned.labels]
 
-scRNA.seurat[["SingleR.cluster_labels"]] <- cluster_to_label[Idents(scRNA.seurat)]
 
+SingleR::SingleR(test = GetAssayData(scRNA.seurat), ref = list(ref_noversht, ref_blueprint), clusters = Idents(scRNA.seurat),labels = list(ref_noversht$label.ont, ref_blueprint$label.ont)) -> scRNA.singleR_cluster_labels
+
+scRNA.singleR_cluster_labels %>% 
+  as_tibble(rownames = "cluster") %>% 
+  dplyr::select(cluster, pruned.labels) %>% 
+  deframe() -> cluster_to_ontology
+  
+# also add the cluster-level labels
+scRNA.seurat[["SingleR.cluster_labels"]] <- cluster_to_ontology[Idents(scRNA.seurat)]
+
+# and the cluster-level clearnames
+scRNA.seurat[["SingleR.cluster_labels.clearname"]] <- cell_ontology$name[cluster_to_ontology[Idents(scRNA.seurat)]]
 ```
 
 First, we can plot a histrogram of the per-cell label scores
@@ -283,24 +296,22 @@ bluster::pairwiseRand(Idents(scRNA.seurat), scRNA.singleR_cell_labels$pruned.lab
 Finally, we can plot a heatmap comparing the per cluster labels.
 
 ```{r}
-log10(table(Idents(scRNA.seurat), cell_ontology$name[scRNA.singleR_cell_labels$pruned.labels])+10) %>% 
+log10(table(Idents(scRNA.seurat), scRNA.seurat$SingleR.cell_labels.clearname)+10) %>% 
   t() %>% 
   ComplexHeatmap::Heatmap()
 ```
 
-And the cell-wide to the cluster-wide labels
+And the cell-level to the cluster-level labels
 
 ```{r}
-scRNA.singleR_cluster_labels %>% 
-  as_tibble() %>% 
-  rowid_to_column("cluster") %>% 
-  mutate(cluster = cluster-1) %>% 
-  dplyr::select(cluster, pruned.labels) %>% 
-  deframe() -> cluster_to_label 
-
-
-log10(table(scRNA.singleR_cell_labels$pruned.labels, cluster_to_label[Idents(scRNA.seurat)])+10) %>% 
+log10(table(scRNA.seurat$SingleR.cell_labels.clearname, scRNA.seurat$SingleR.cluster_labels.clearname)+10) %>% 
   ComplexHeatmap::Heatmap()
+```
+
+As we can see, in general there's a very good agreement between the cell-level and cluster-level assignments; however, within the unsupervised clusters, there's considerable heterogeneity in cell types.
+
+```{r}
+DimPlot(scRNA.seurat, reduction = "umap", label = T, group.by = "SingleR.cluster_labels.clearname", cols = DiscretePalette(n = unique(scRNA.seurat$SingleR.cluster_labels.clearname) %>% length()))
 ```
 
 # Saving/Loading HDF5

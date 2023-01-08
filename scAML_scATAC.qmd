@@ -1,0 +1,181 @@
+---
+title: "scAML_scRNA_scATACseq_integration"
+format: gfm
+editor: visual
+bibliography: references.bib
+---
+
+# Introduction
+
+In the scAML_seurat vignette we have analyzed the MPAL scRNA data set through the seurat pipeline. We now aim to also integrate the scATACseq data. For this, we again follow the [Signac](https://stuartlab.org/signac/index.html) vignette (a Seurat spin off for scATAC seq) to get a feeling for this type of data.
+
+In order to keep data handling manageable on the local machine, we first start with BMMC only samples.
+
+Generally speaking, 10x cellranger creates a peak-barcode matrix, which includes chromosomal regions (peaks) as rows and cell barcodes as columns. Every value in the matrix represents the number of Tn5 integrations for a specific genomic region per cell (see [here](https://support.10xgenomics.com/single-cell-atac/software/pipelines/latest/algorithms/overview)).
+
+The 10x cellranger ATAC caller performs the following steps
+
+1.  Barcode processing to assign a read to a cell
+
+2.  Alignment after barcode and primer trimming using a BWA-based algo
+
+3.  Duplicate reads are removed using a molecular identifier
+
+4.  Peaks are then called and filtered against a global, non-specific background signal (random transposition events) and smoothened using a 401 bp moving window sum
+
+![](https://support.10xgenomics.com/img/single-cell-atac/1.2/peak_calling.png)
+
+The peaks are store in the fragments.tsv file and assigned to cells using the barcode. We can download the fragments tsv for the BMMC data from [GEO](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE139369).
+
+# Fragment counting and peak calling
+
+We first count the fragments and call the peaks as described [here](https://github.com/stuart-lab/signac/discussions/1025#discussioncomment-2342170).
+
+Indexing of the fragments tsv is done as this
+
+1.  gzip -d \<fragment.tsv.gz\>
+
+2.  bgzip \<fragment.tsv\>
+
+3.  tabix -p bed \<fragment.tsv.gz\>
+
+```{r}
+#|eval: false
+
+# this needs to be run in an linux environment with macs2 installed
+library(Signac)
+library(Seurat)
+
+BMMC1.scATAC.counts <- CountFragments(fragments = "datasets/granja_scMPAL/GSM4138888_scATAC_BMMC_D5T1.fragments.tsv.gz", verbose = T)
+
+BMMC2.scATA.counts <- CountFragments(fragments = "datasets/granja_scMPAL/GSM4138889_scATAC_BMMC_D6T1.fragments.tsv.gz", verbose = T) 
+
+BMMC1.scATAC.peaks <- CallPeaks(object = "datasets/granja_scMPAL/GSM4138888_scATAC_BMMC_D5T1.fragments.tsv.gz", macs2.path = "/home/sebastian//.local/bin/macs2", outdir = "/home/sebastian/Forschung/scAML/", verbose = T)
+
+
+BMMC2.scATAC.peaks <- CallPeaks(object = "datasets/granja_scMPAL/GSM4138889_scATAC_BMMC_D6T1.fragments.tsv.gz", macs2.path = "/home/sebastian//.local/bin/macs2", outdir = "/home/sebastian/Forschung/scAML/", verbose = T)
+
+```
+
+## Feature matrix, Chromatin assay and Seurat object
+
+```{r}
+# counted peaks
+BMMC.scATAC_datasets <- readRDS("BMMC1.scATAC.datasets.RDS")
+
+# find common peaks
+reduced_peaks <- reduce(c(pluck(BMMC.scATAC_datasets, "BMMC1", "peaks"), 
+                          pluck(BMMC.scATAC_datasets, "BMMC2", "peaks")))
+
+# get peak width
+peakwidth <- width(reduced_peaks)
+
+# filter peak width
+reduced_peaks <- reduced_peaks[peakwidth < 1000 & peakwidth>20]
+
+# create frags
+BMMC1.scATAC.frags <- CreateFragmentObject(path = "datasets/granja_scMPAL/GSM4138888_scATAC_BMMC_D5T1.fragments.tsv.gz", cells = pluck(BMMC.scATAC_datasets, "BMMC1", "counts")$CB)
+BMMC2.scATAC.frags <- CreateFragmentObject(path = "datasets/granja_scMPAL/GSM4138889_scATAC_BMMC_D6T1.fragments.tsv.gz", cells = pluck(BMMC.scATAC_datasets, "BMMC2", "counts")$CB)
+
+# create feature matrix using the reduced peaks
+BMMC1.scATAC.features.reduced <- FeatureMatrix(fragments = BMMC1.scATAC.frags, features = reduced_peaks)
+BMMC2.scATAC.features.reduced <- FeatureMatrix(fragments = BMMC2.scATAC.frags, features = reduced_peaks)
+
+# build the chromatin assay
+BMMC1.scATAC.chromatin_assay <- CreateChromatinAssay(counts = BMMC1.scATAC.features.reduced, fragments = BMMC1.scATAC.frags)
+BMMC2.scATAC.chromatin_assay <- CreateChromatinAssay(counts = BMMC2.scATAC.features.reduced, fragments = BMMC2.scATAC.frags)
+
+
+BMMC1.scATAC.seurat <- CreateSeuratObject(BMMC1.scATAC.chromatin_assay, assay = "ATAC")
+BMMC2.scATAC.seurat <- CreateSeuratObject(BMMC2.scATAC.chromatin_assay, assay  = "ATAC")
+
+BMMC1.scATAC.seurat[["dataset"]] <- "BMMC1"
+BMMC2.scATAC.seurat[["dataset"]] <- "BMMC2"
+
+BMMC.scATAC.seurat <- merge(BMMC1.scATAC.seurat, BMMC2.scATAC.seurat, add.cell.ids = c("BMMC1", "BMMC2"))
+
+SeuratDisk::SaveH5Seurat(BMMC.scATAC.seurat, filename = "BMMC.scATAC.seurat", overwrite = T)
+rm(BMMC.scATAC.seurat)
+BMMC.scATAC.seurat <- SeuratDisk::LoadH5Seurat("BMMC.scATAC.seurat.h5seurat")
+```
+
+## Range mapping
+
+The Seurat object now contains an assay called "ATAC" with the merged feature matrix.
+
+```{r}
+BMMC.scATAC.seurat[["ATAC"]]
+```
+
+We can map the gRanges to the current ensembl to add gene information.
+
+```{r}
+granges(BMMC.scATAC.seurat)
+```
+
+```{r}
+library(EnsDB.Hsapiens.v75)
+grange_annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v75)
+
+# change refseq for hg19 
+# A word of caution on the NCBI RefSeq track on hg19: NCBI is not fully supporting hg19 anymore. As a result, some 
+# genes are not located on the main chromosomes in anymore. An example is NM_001129826/CSAG3. For hg19, you may prefer # UCSC RefSeq for now.
+# https://genome.ucsc.edu/FAQ/FAQgenes.html#ncbiRefseq
+
+seqlevelsStyle(grange_annotation) <- "UCSC"
+
+# add the Annotations to the object
+Annotation(BMMC.scATAC.seurat) <- grange_annotation
+```
+
+## QC metrics
+
+### Nucleasome banding
+
+See also https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-1929-3
+
+The fragments should exhibit a strong nucleasome banding pattern corresponding to the length of DNA wrapped around a single nucleosome. As per usual all metrics are added to the Seurat object and stored as metadata.
+
+Typically, a successful ATAC-seq experiment should generate a fragment size distribution plot with decreasing and periodical peaks corresponding to the nucleosome-free regions (NFR) (\< 100 bp) and mono-, di-, and tri-nucleosomes (\~ 200, 400, 600 bp, respectively).
+
+```{r}
+BMMC.scATAC.seurat <- NucleosomeSignal(BMMC.scATAC.seurat)
+
+FragmentHistogram(BMMC.scATAC.seurat)
+```
+
+Clearly, we can distinguish between nucleosome free (NFR), mono-, di- and tri-nucleosome regions.
+
+#### Transcription starting side (TSS) Enrichment Score
+
+**Transcription Start Site (TSS) Enrichment Score** - The TSS enrichment calculation is a signal to noise calculation. The reads around a reference set of TSSs are collected to form an aggregate distribution of reads centered on the TSSs and extending to 2000 bp in either direction (for a total of 4000bp). This distribution is then normalized by taking the average read depth in the 100 bps at each of the end flanks of the distribution (for a total of 200bp of averaged data) and calculating a fold change at each position over that average read depth. This means that the flanks should start at 1, and if there is high read signal at transcription start sites (highly open regions of the genome) there should be an increase in signal up to a peak in the middle. We take the signal value at the center of the distribution after this normalization as our TSS enrichment metric. **Used to evaluate ATAC-seq**
+
+Usually, NFR should be enriched at the center of a TSS while mono-nucleosome fragments are depleted at the center but have smaller peaks flanking the TSS.
+
+```{r}
+BMMC.scATAC.seurat <- TSSEnrichment(BMMC.scATAC.seurat, fast = F)
+```
+
+We can plot the TSS enrichment scores
+
+```{r}
+BMMC.scATAC.seurat$high_tss <- ifelse(BMMC.scATAC.seurat$TSS.enrichment > 2, "high", "low")
+                                              
+TSSPlot(BMMC.scATAC.seurat, group.by = "high_tss") + NoLegend() 
+```
+
+And also the fragments histogram facetted by the nucleosome-pattern where \>4 nuclosome patterns are usually outliers.
+
+```{r}
+BMMC.scATAC.seurat$nucleosome_group <- ifelse(BMMC.scATAC.seurat$nucleosome_signal > 4, "NS > 4", "NS < 4")
+
+FragmentHistogram(BMMC.scATAC.seurat, group.by = "nucleosome_group")
+```
+
+```{r}
+total_frags <- rbind(BMMC1.scATAC.counts, BMMC2.scATA.counts)
+
+BMMC.scATAC.seurat$fragments <- total_frags[colnames(BMMC.scATAC.seurat), "frequency_count"]
+
+BMMC.scATAC.seurat <- FRiP(BMMC.scATAC.seurat, assay = "ATAC", total.fragments = )
+```
