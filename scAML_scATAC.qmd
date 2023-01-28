@@ -40,9 +40,6 @@ Indexing of the fragments tsv is done as this
 3.  tabix -p bed \<fragment.tsv.gz\>
 
 ```{r}
-#|eval: false
-
-# this needs to be run in an linux environment with macs2 installed
 library(Signac)
 library(Seurat)
 
@@ -50,6 +47,12 @@ BMMC1.scATAC.counts <- CountFragments(fragments = "datasets/granja_scMPAL/GSM413
 
 BMMC2.scATA.counts <- CountFragments(fragments = "datasets/granja_scMPAL/GSM4138889_scATAC_BMMC_D6T1.fragments.tsv.gz", verbose = T) 
 
+
+```
+
+```{r}
+#|eval: false
+# this needs to be run in an linux environment with macs2 installed
 BMMC1.scATAC.peaks <- CallPeaks(object = "datasets/granja_scMPAL/GSM4138888_scATAC_BMMC_D5T1.fragments.tsv.gz", macs2.path = "/home/sebastian//.local/bin/macs2", outdir = "/home/sebastian/Forschung/scAML/", verbose = T)
 
 
@@ -64,14 +67,14 @@ BMMC2.scATAC.peaks <- CallPeaks(object = "datasets/granja_scMPAL/GSM4138889_scAT
 BMMC.scATAC_datasets <- readRDS("BMMC1.scATAC.datasets.RDS")
 
 # find common peaks
-reduced_peaks <- reduce(c(pluck(BMMC.scATAC_datasets, "BMMC1", "peaks"), 
+reduced_peaks <- Signac::reduce(c(pluck(BMMC.scATAC_datasets, "BMMC1", "peaks"), 
                           pluck(BMMC.scATAC_datasets, "BMMC2", "peaks")))
 
 # get peak width
-peakwidth <- width(reduced_peaks)
+peakwidth <- GenomicRanges::width(reduced_peaks)
 
 # filter peak width
-reduced_peaks <- reduced_peaks[peakwidth < 1000 & peakwidth>20]
+reduced_peaks <- reduced_peaks[peakwidth < 1000 & peakwidth > 20]
 
 # create frags
 BMMC1.scATAC.frags <- CreateFragmentObject(path = "datasets/granja_scMPAL/GSM4138888_scATAC_BMMC_D5T1.fragments.tsv.gz", cells = pluck(BMMC.scATAC_datasets, "BMMC1", "counts")$CB)
@@ -93,10 +96,6 @@ BMMC1.scATAC.seurat[["dataset"]] <- "BMMC1"
 BMMC2.scATAC.seurat[["dataset"]] <- "BMMC2"
 
 BMMC.scATAC.seurat <- merge(BMMC1.scATAC.seurat, BMMC2.scATAC.seurat, add.cell.ids = c("BMMC1", "BMMC2"))
-
-SeuratDisk::SaveH5Seurat(BMMC.scATAC.seurat, filename = "BMMC.scATAC.seurat", overwrite = T)
-rm(BMMC.scATAC.seurat)
-BMMC.scATAC.seurat <- SeuratDisk::LoadH5Seurat("BMMC.scATAC.seurat.h5seurat")
 ```
 
 ## Range mapping
@@ -114,8 +113,8 @@ granges(BMMC.scATAC.seurat)
 ```
 
 ```{r}
-library(EnsDB.Hsapiens.v75)
-grange_annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v75)
+library(EnsDb.Hsapiens.v86)
+grange_annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
 
 # change refseq for hg19 
 # A word of caution on the NCBI RefSeq track on hg19: NCBI is not fully supporting hg19 anymore. As a result, some 
@@ -125,6 +124,7 @@ grange_annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v75)
 seqlevelsStyle(grange_annotation) <- "UCSC"
 
 # add the Annotations to the object
+
 Annotation(BMMC.scATAC.seurat) <- grange_annotation
 ```
 
@@ -139,14 +139,14 @@ The fragments should exhibit a strong nucleasome banding pattern corresponding t
 Typically, a successful ATAC-seq experiment should generate a fragment size distribution plot with decreasing and periodical peaks corresponding to the nucleosome-free regions (NFR) (\< 100 bp) and mono-, di-, and tri-nucleosomes (\~ 200, 400, 600 bp, respectively).
 
 ```{r}
-BMMC.scATAC.seurat <- NucleosomeSignal(BMMC.scATAC.seurat)
+BMMC.scATAC.seurat <- Signac::NucleosomeSignal(BMMC.scATAC.seurat)
 
 FragmentHistogram(BMMC.scATAC.seurat)
 ```
 
 Clearly, we can distinguish between nucleosome free (NFR), mono-, di- and tri-nucleosome regions.
 
-#### Transcription starting side (TSS) Enrichment Score
+### Transcription starting side (TSS) Enrichment Score
 
 **Transcription Start Site (TSS) Enrichment Score** - The TSS enrichment calculation is a signal to noise calculation. The reads around a reference set of TSSs are collected to form an aggregate distribution of reads centered on the TSSs and extending to 2000 bp in either direction (for a total of 4000bp). This distribution is then normalized by taking the average read depth in the 100 bps at each of the end flanks of the distribution (for a total of 200bp of averaged data) and calculating a fold change at each position over that average read depth. This means that the flanks should start at 1, and if there is high read signal at transcription start sites (highly open regions of the genome) there should be an increase in signal up to a peak in the middle. We take the signal value at the center of the distribution after this normalization as our TSS enrichment metric. **Used to evaluate ATAC-seq**
 
@@ -161,7 +161,7 @@ We can plot the TSS enrichment scores
 ```{r}
 BMMC.scATAC.seurat$high_tss <- ifelse(BMMC.scATAC.seurat$TSS.enrichment > 2, "high", "low")
                                               
-TSSPlot(BMMC.scATAC.seurat, group.by = "high_tss") + NoLegend() 
+TSSPlot(BMMC.scATAC.seurat) + NoLegend() 
 ```
 
 And also the fragments histogram facetted by the nucleosome-pattern where \>4 nuclosome patterns are usually outliers.
@@ -172,10 +172,263 @@ BMMC.scATAC.seurat$nucleosome_group <- ifelse(BMMC.scATAC.seurat$nucleosome_sign
 FragmentHistogram(BMMC.scATAC.seurat, group.by = "nucleosome_group")
 ```
 
+### Fraction of fragments/reads in peaks per cell
+
+Calculating fraction of reads in peaks per cell; cells with low values (\<15-20%) usually are low quality or technical artifacts
+
 ```{r}
-total_frags <- rbind(BMMC1.scATAC.counts, BMMC2.scATA.counts)
+BMMC1.scATAC.counts <- BMMC1.scATAC.counts %>% mutate(CB = paste0("BMMC1_", CB))
+BMMC2.scATA.counts <- BMMC2.scATA.counts %>% mutate(CB = paste0("BMMC2_", CB))
 
-BMMC.scATAC.seurat$fragments <- total_frags[colnames(BMMC.scATAC.seurat), "frequency_count"]
+total_frags <- rbind(BMMC1.scATAC.counts, BMMC2.scATA.counts) %>% column_to_rownames("CB")
 
-BMMC.scATAC.seurat <- FRiP(BMMC.scATAC.seurat, assay = "ATAC", total.fragments = )
+BMMC.scATAC.seurat$total_frags <- total_frags[colnames(BMMC.scATAC.seurat), "frequency_count"]
+BMMC.scATAC.seurat$reads_count <- total_frags[colnames(BMMC.scATAC.seurat), "reads_count"]
+
+BMMC.scATAC.seurat <- FRiP(BMMC.scATAC.seurat, assay = "ATAC", total.fragments = "total_frags")
+```
+
+### Ratio of reads in blacklist regions
+
+Ratio of reads in genomic blacklist regions as per ENCODE blacklist
+
+```{r}
+BMMC.scATAC.seurat$blacklist_fraction <- FractionCountsInRegion(BMMC.scATAC.seurat, regions = blacklist_hg19)
+```
+
+### Plotting
+
+We can now plot all the QC metrics
+
+```{r}
+BMMC.scATAC.seurat$orig.ident <- ifelse(grepl(x = colnames(BMMC.scATAC.seurat), pattern = "BMMC1"), "BMMC1", "BMMC2")
+
+VlnPlot(BMMC.scATAC.seurat, features = c("reads_count", "nucleosome_signal", "TSS.enrichment", "blacklist_fraction", "total_frags","FRiP"), pt.size = 0,  log = T, group.by = "orig.ident")
+```
+
+We filter the data set based on the QC metrics suggested by the Signac vignette albeit we loosen the required number of frags per cell.
+
+```{r}
+BMMC.scATAC.seurat <- subset(
+  x = BMMC.scATAC.seurat,
+  subset = total_frags > 1000 &
+    total_frags < 20000 &
+    FRiP > 0.15 &
+    blacklist_fraction < 0.05 &
+    nucleosome_signal < 4 &
+    TSS.enrichment > 2
+)
+```
+
+```{r}
+BMMC.scATAC.seurat
+```
+
+# Normalization
+
+```{r}
+BMMC.scATAC.seurat <- RunTFIDF(BMMC.scATAC.seurat)
+```
+
+We use all features for dimensionality reduction
+
+```{r}
+BMMC.scATAC.seurat <- FindTopFeatures(BMMC.scATAC.seurat, min.cutoff = "q0")
+```
+
+```{r}
+BMMC.scATAC.seurat <- RunSVD(BMMC.scATAC.seurat)
+```
+
+Investigate correlation between LSI 1 and sequencing depth
+
+TF-IDF + SVD is known as LSI
+
+```{r}
+DepthCor(BMMC.scATAC.seurat)
+```
+
+We see a strong correlation between lsci component 1 and sequencing depth.
+
+```{r}
+BMMC.scATAC.seurat <- RunUMAP(BMMC.scATAC.seurat, reduction = "lsi", dims = 2:30)
+BMMC.scATAC.seurat <- FindNeighbors(BMMC.scATAC.seurat, reduction = "lsi", dims = 2:30)
+BMMC.scATAC.seurat <- FindClusters(BMMC.scATAC.seurat, algorithm = 3)
+
+DimPlot(BMMC.scATAC.seurat, label = T) + NoLegend()
+```
+
+# Co-embedding and label transfer
+
+We first try this with the BMMC data only to investigate possible technical confounders. For this, we subset the scRNA data set to include only the "BMMC" samples.
+
+Details on the workflow are described in [@stuart2019] and [here](https://satijalab.org/seurat/articles/atacseq_integration_vignette.html).
+
+```{r}
+# scRNA preprocessing
+BMMC1.scRNA <- readRDS("datasets/granja_scMPAL/GSM4138872_scRNA_BMMC_D1T1.rds")
+BMMC2.scRNA <- readRDS("datasets/granja_scMPAL/GSM4138873_scRNA_BMMC_D1T2.rds")
+
+BMMC1.scRNA.seurat <- CreateSeuratObject(counts = BMMC1.scRNA,project = "BMMC1.scRNA", assay = "RNA", names.field = 2, names.delim = ":")
+
+BMMC2.scRNA.seurat <- CreateSeuratObject(counts = BMMC2.scRNA,project = "BMMC2.scRNA", assay = "RNA", names.field = 2, names.delim = ":")
+
+BMMC.scRNA.seurat <- merge(x=BMMC1.scRNA.seurat, y = BMMC2.scRNA.seurat, add.cell.ids = c("BMMC1", "BMMC2"))
+
+BMMC.scRNA.seurat <- NormalizeData(BMMC.scRNA.seurat)
+BMMC.scRNA.seurat <- FindVariableFeatures(BMMC.scRNA.seurat)
+BMMC.scRNA.seurat <- ScaleData(BMMC.scRNA.seurat)
+BMMC.scRNA.seurat <- RunPCA(BMMC.scRNA.seurat)
+BMMC.scRNA.seurat <- RunUMAP(BMMC.scRNA.seurat, dims = 1:30)
+
+DimPlot(BMMC.scRNA.seurat, reduction = "umap", group.by = "orig.ident")
+```
+
+## Label identification
+
+We use SingleR to identify labels for the cells.
+
+```{r}
+SingleR::SingleR(test = GetAssayData(BMMC.scRNA.seurat), 
+                 ref = list(ref_noversht, ref_blueprint), 
+                 labels = list(ref_noversht$label.ont, ref_blueprint$label.ont), 
+                 de.method = "classic") -> BMMC.scRNA.singleR
+
+BMMC.scRNA.seurat[["singleR.labels"]] <- cell_ontology$name[BMMC.scRNA.singleR$pruned.labels]
+
+DimPlot(BMMC.scRNA.seurat, group.by = "singleR.labels", label = T) + NoLegend()
+```
+
+## scATAC preprocessing and gene activity matrix construction
+
+```{r}
+library(EnsDb.Hsapiens.v86)
+# scATAC preprocessing
+grange_annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevelsStyle(grange_annotation) <- "UCSC"
+genome(grange_annotation) <- "hg38"
+DefaultAssay(BMMC.scATAC.seurat) <- "ATAC"
+Annotation(BMMC.scATAC.seurat) <- grange_annotation
+
+BMMC.scATAC.seurat <- RunTFIDF(BMMC.scATAC.seurat)
+BMMC.scATAC.seurat <- FindTopFeatures(BMMC.scATAC.seurat, min.cutoff = "q0")
+BMMC.scATAC.seurat <- RunSVD(BMMC.scATAC.seurat)
+BMMC.scATAC.seurat <- RunUMAP(BMMC.scATAC.seurat, reduction = "lsi", dims = 2:30, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+
+DimPlot(BMMC.scATAC.seurat, reduction = "umap.atac")
+```
+
+```{r}
+gene.activities <- GeneActivity(BMMC.scATAC.seurat, features = VariableFeatures(BMMC.scRNA.seurat))
+
+BMMC.scATAC.seurat[["ACTIVITY"]] <- CreateAssayObject(counts = gene.activities)
+
+DefaultAssay(BMMC.scATAC.seurat) <- "ACTIVITY"
+BMMC.scATAC.seurat <- NormalizeData(BMMC.scATAC.seurat)
+BMMC.scATAC.seurat <- ScaleData(BMMC.scATAC.seurat, features = rownames(BMMC.scATAC.seurat))
+
+BMMC.transfer.anchors <- FindTransferAnchors(reference = BMMC.scRNA.seurat, query = BMMC.scATAC.seurat, features = VariableFeatures(BMMC.scRNA.seurat), reference.assay = "RNA", query.assay = "ACTIVITY", reduction = "cca")
+```
+
+## Label transfer scRNA -\> scATAC
+
+```{r}
+celltype.predictions <- TransferData(anchorset = BMMC.transfer.anchors, refdata = BMMC.scRNA.seurat$singleR.labels, weight.reduction = BMMC.scATAC.seurat[["lsi"]], dims = 2:30)
+
+BMMC.scATAC.seurat <- AddMetaData(BMMC.scATAC.seurat, metadata = celltype.predictions)
+```
+
+SeuratV3 implements feature imputation (in this case imputing genes in the scATAC data set ) using the MNN embedding and mean gene expression of all mutual neighbor (= anchor) cells.
+
+```{r}
+
+# identify highly variable genes
+gene.use <- VariableFeatures(BMMC.scRNA.seurat)
+
+# query the reference RNA data set
+refdata <- GetAssayData(BMMC.scRNA.seurat, assay = "RNA", slot = "data")[gene.use, ]
+
+# use the variable genes and impute these on the scATAC data set
+BMMC.imputation <- TransferData(anchorset = BMMC.transfer.anchors, refdata = refdata, weight.reduction = BMMC.scATAC.seurat[["lsi"]], dims = 2:30)
+
+# append the imputed gene activity matrix
+BMMC.scATAC.seurat[["RNA"]] <- BMMC.imputation
+
+# now create a co-embedding
+BMMC.coembed <- merge(x = BMMC.scRNA.seurat, y = BMMC.scATAC.seurat)
+
+# scale the resulting data set
+BMMC.coembed <- ScaleData(BMMC.coembed, features = gene.use, do.scale = F)
+
+# run dim reduction and umap
+BMMC.coembed <- RunPCA(BMMC.coembed, features = gene.use, verbose = T)
+BMMC.coembed <- RunUMAP(BMMC.coembed, dims = 1:30)
+
+# we can merge the singlR and the transfered labels 
+BMMC.coembed$coembed.id <- ifelse(is.na(BMMC.coembed$singleR.labels), BMMC.coembed$predicted.id, BMMC.coembed$singleR.labels)
+
+BMMC.coembed$tech <- ifelse(grepl(x = BMMC.coembed$orig.ident, pattern = ".scRNA"), "RNA", "ATAC")
+
+p1 <- DimPlot(BMMC.coembed, group.by = "tech", label = T) + NoLegend()
+p2 <- DimPlot(BMMC.coembed, group.by = "coembed.id", label = T) + NoLegend()
+
+p1 | p2
+```
+
+## Batch correction using harmony
+
+[@korsunsky2019]
+
+```{r}
+BMMC.coembed <- harmony::RunHarmony(BMMC.coembed, 
+                                    group.by.vars = "tech", 
+                                    reduction = "pca", 
+                                    max.iter.harmony = 30, 
+                                    dims.use = 1:30, 
+                                    project.dim = F, 
+                                    plot_convergence = F)
+
+BMMC.coembed <- RunUMAP(BMMC.coembed, 
+                        dims = 1:30, 
+                        reduction = "harmony", 
+                        reduction.name = "umap_harmony", 
+                        reduction.key = "umap_harmony_", 
+                        verbose = F, 
+                        min.dist = 0.4)
+
+p1 <- DimPlot(BMMC.coembed, group.by = "tech", reduction = "umap")
+p2 <- DimPlot(BMMC.coembed, group.by = "tech", reduction = "umap_harmony")
+
+p1 | p2
+```
+
+We can plot canonical cell type markers to confirm our data set integration and the cellular compositions per cluster
+
+```{r}
+library(Nebulosa)
+
+p_cd34 <- plot_density(BMMC.coembed, reduction = "umap_harmony", feature = "CD34", pal = "magma")
+p_cd14 <- plot_density(BMMC.coembed, reduction = "umap_harmony", feature = "CD14", pal = "magma")
+p_cd4 <- plot_density(BMMC.coembed, reduction = "umap_harmony", feature = "CD4", pal = "magma")
+p_cd19 <- plot_density(BMMC.coembed, reduction = "umap_harmony", feature = "CD19", pal = "magma")
+
+(p_cd34 + p_cd14) / (p_cd4 + p_cd19)
+```
+
+## Subclustering in the co-embedded space
+
+using the id parameter we can set the coembed.id metadata as the grouping variable
+
+```{r}
+Idents(BMMC.coembed) <- BMMC.coembed$coembed.id
+all.markers <- FindAllMarkers(BMMC.coembed, only.pos = T, min.pct = 0.25, logfc.threshold = 0.5)
+
+de_features <- all.markers %>% 
+  group_by(cluster) %>% 
+  slice_max(n = 3, order_by = avg_log2FC)
+
+```
+
+```{r}
+SeuratDisk::SaveH5Seurat(BMMC.coembed, "BMMC.coembed", overwrite = T)
 ```

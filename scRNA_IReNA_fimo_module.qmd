@@ -1,0 +1,43 @@
+---
+title: "scAML IReNA fimo"
+format: html
+editor: visual
+---
+
+# Introduction
+
+The goal of this vignette is to refine the TF activity network predictions from IReNA using the FIMO tool for TF motif identification.
+
+The vignette can be found here https://jiang-junyao.github.io/IReNA/only-scRNA
+
+While the goal is to use scATAC data to refine the regulatory network, we still need to get FIMO running as it is used in both cases.
+
+Since FIMO (part of the MEME suite) only works in an Linux environment, we run this script in RStudio server from Windows Subsystem for Linux (WSL).
+
+By now, we have completed part 1 which includes adding monocle pseudotime to the Seurat object, clustering the DE TFs and build a simple regulatory network not by using GENIE3 (due to hardware constrains) but by Pearson correlation.
+
+From a theoretical background, up to this step, IReNA creates a regulatory connection between an TF and a target gene purely on correlation, i.e. correlation or GENIE3. However, this doesn't ensure that the motif of the TF is actually found in a target genes transcription starting side. For this, a motif searching tool such as fimo can be used to retain only those connections, that satisfy this condition.
+
+In later iterations we can use scATAC data to further refine the regulatory network.
+
+```{r}
+tss_and_motifs <- readRDS("/mnt/c/Users/wolf-/Documents/Forschung/Github Public Repository/scAML/tss_and_motifs.RDS")
+
+tss <- tss_and_motifs$gene_tss
+motifs <- tss_and_motifs$motifs
+
+library(IReNA)
+
+# set global fimo path with export 
+# PATH=$HOME/meme/bin:$HOME/meme/libexec/meme-5.5.0:$PATH
+
+refdir <- "/home/sebastian/Forschung/scAML/hg38.fa"
+fimodir <- "/home/sebastian/meme/bin/fimo"
+outputdir1 <- "/home/sebastian/Forschung/scAML/fimo/"
+motifdir <- "/home/sebastian/Forschung/scAML/motif/"
+
+find_motifs_targetgenes(tss, motifs, refdir = refdir, fimodir = fimodir, outputdir1 = outputdir1, Motifdir = motifdir)
+
+shell_code <- paste0("sh ", outputdir1, "fimo/fimoall.sh")
+system(shell_code, wait = T)
+```

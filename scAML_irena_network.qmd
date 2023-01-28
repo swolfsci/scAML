@@ -24,13 +24,16 @@ TF_motifs <-  Tranfac201803_Hs_MotifTFsF
 We first need to add a pseudo-time column to the metadata; IReNA does this by using get_pseudotime from monocle2. Setting gene.use = NULL will only use most variable genes
 
 ```{r}
-irena.seurat_with_time <- readRDS("seurat_with_time.rds")
+#irena.seurat_with_time <- readRDS("seurat_with_time.rds")
+# the seurat object is stored as an HF5 file
+scRNA.seurat <- SeuratDisk::LoadH5Seurat(file = "MPAL.scRNA.h5Seurat")
 ```
 
 Since using all 12.000 single cells allocates to much ram, we subset on 1000 cells.
 
 ```{r}
-BMMC.scRNA.monocle <- IReNA::get_pseudotime(BMMC.scRNA.seurat[,1:1000], gene.use = NULL)
+devtools::load_all("c:/Users/wolf-/AppData/Local/R/win-library/4.2/monocle")
+scRNA.monocle <- IReNA::get_pseudotime(scRNA.seurat, gene.use = NULL)
 
 BMMC.scRNA.seurat.subset_with_pseudotime <- add_pseudotime(BMMC.scRNA.seurat[,1:1000], BMMC.scRNA.monocle)
 ```

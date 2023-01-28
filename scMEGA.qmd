@@ -1,0 +1,188 @@
+---
+title: "scAML_scMEGA"
+format: gfm
+editor: visual
+---
+
+# Introduction
+
+We try different strategies for single cell gene regulatory network (GRN) inference, one is IReNA, another one, just recently published, is scMEGA from the Costa lab. Conventienly, it build on ArchR, Seurat and Signac which fits well into the ecosystem.
+
+```{r}
+library(Seurat)
+library(Signac)
+library(scMEGA)
+library(magrittr)
+library(chromVAR)
+
+BMMC.coembed <- SeuratDisk::LoadH5Seurat("/mnt/c/Users/wolf-/Documents/Forschung/Github Public Repository/scAML/BMMC.coembed.h5seurat")
+```
+
+```{r}
+BMMC.coembed <- RunDiffusionMap(BMMC.coembed, reduction = "harmony")
+
+DimPlot(BMMC.coembed, reduction = "dm", label = T, shuffle = T, split.by = "tech") + NoLegend()
+```
+
+```{r}
+df.pair <- PairCells(object = BMMC.coembed, reduction = "harmony", pair.by = "tech", ident1 = "ATAC", ident2 = "RNA")
+```
+
+```{r}
+BMMC.coembed.paired <- CreatePairedObject(df.pair = df.pair, 
+                                          object = BMMC.coembed, 
+                                          use.assay1 = "RNA", 
+                                          use.assay2 = "ATAC")
+```
+
+```{r}
+Idents(BMMC.coembed.paired) <- BMMC.coembed.paired$coembed.id
+DimPlot(BMMC.coembed.paired, reduction = "umap", label = T, shuffle = T) + NoLegend()
+```
+
+We create a trajectory from the HSCs to the monocyte cluster
+
+```{r}
+BMMC.coembed.paired <- AddTrajectory(object = BMMC.coembed.paired, 
+                                     trajectory = 
+                                       c("hematopoietic stem cell", "granulocyte monocyte progrenitor cell", "common myeloid progenitor","monocyte"), 
+                                     reduction = "umap",  use.all = F, group.by = "coembed.id", spar = 1.2)
+```
+
+Subset the object to only include cells withing the trajectory
+
+```{r}
+BMMC.coembed.paired.trajectory <- BMMC.coembed.paired[, !is.na(BMMC.coembed.paired$Trajectory)]
+```
+
+And plot the trajectory
+
+```{r}
+TrajectoryPlot(object = BMMC.coembed.paired.trajectory, reduction = "umap", size = 1, addArrow = T)
+```
+
+We next retrieve position fequency matrices (pfm) from the [JASPAR](https://jaspar.genereg.net/docs/) data base [here](https://bioconductor.org/packages/release/data/annotation/vignettes/JASPAR2020/inst/doc/JASPAR2020.html).
+
+```{r}
+library(JASPAR2020)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(motifmatchr)
+library(SummarizedExperiment)
+library(ArchR)
+
+pfm <- TFBSTools::getMatrixSet(x = JASPAR2020, 
+                               opts = list(collection = "CORE", 
+                                           tax_group = "vertebrates", 
+                                           all_versions = F))
+
+grange_annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v75)
+seqlevelsStyle(grange_annotation) <- "UCSC"
+genome(grange_annotation) <- "hg19"
+
+# it seems there was a problem when constructing the chromatin assay and the hg19 annotation got lost
+BMMC.coembed.paired.trajectory[["ATAC"]]@ranges@seqinfo@genome <- rep("hg19",24)
+
+BMMC.coembed.paired.trajectory <- AddMotifs(object = BMMC.coembed.paired.trajectory,
+                                            genome = BSgenome.Hsapiens.UCSC.hg19, 
+                                            pfm = pfm, 
+                                            assay = "ATAC")
+
+BMMC.coembed.paired.trajectory <- RunChromVAR(object = BMMC.coembed.paired.trajectory,
+                                              genome = BSgenome.Hsapiens.UCSC.hg19, assay = "ATAC")
+
+res <- SelectTFs(BMMC.coembed.paired.trajectory, return.heatmap = T)
+
+df.cor <- res$tfs
+ht <- res$heatmap
+
+draw(ht)
+```
+
+```{r}
+res <- SelectGenes(object = BMMC.coembed.paired.trajectory, 
+                   labelTop1 = 0, 
+                   labelTop2 = 0)
+```
+
+```{r}
+df.p2g <- res$p2g
+ht <- res$heatmap
+
+draw(ht)
+```
+
+```{r}
+tf.gene.cor <- GetTFGeneCorrelation(object = BMMC.coembed.paired.trajectory, 
+                                    tf.use = df.cor$tfs, 
+                                    gene.use = unique(df.p2g$gene), 
+                                    tf.assay = "chromvar", 
+                                    gene.assay = "RNA", trajectory.name = "Trajectory")
+```
+
+```{r}
+ht <- GRNHeatmap(tf.gene.cor = tf.gene.cor, tf.timepoint = df.cor$time_point)
+ht
+```
+
+```{r}
+motif.matching <- BMMC.coembed.paired.trajectory@assays$ATAC@motifs@data
+colnames(motif.matching) <- BMMC.coembed.paired.trajectory@assays$ATAC@motifs@motif.names
+
+motif.matching <- motif.matching[unique(df.p2g$peak), unique(tf.gene.cor$tf)]
+
+df.grn <- GetGRN(motif.matching = motif.matching, df.cor = tf.gene.cor, df.p2g = df.p2g)
+```
+
+```{r}
+library(igraph)
+library(ggraph)
+df.cor <- df.cor[order(df.cor$time_point),]
+tfs.timepoint <- df.cor$time_point
+names(tfs.timepoint) <- df.cor$tfs
+
+df.grn2 <- df.grn %>%
+    subset(correlation > 0.4) %>%
+    dplyr::select(c(tf, gene, correlation)) %>%
+    dplyr::rename(weights = correlation)
+
+p <- GRNPlot(df.grn2, tfs.timepoint = tfs.timepoint, show.tf.labels = T, seed = 069, plot.importance = T, min.importance = 2, remove.isolated = F)
+
+options(repr.plot.height = 20, repr.plot.width = 20)
+
+
+```
+
+```{r}
+# the function from the package has an erronous if statement hence we use a modified version
+
+AddTargetAssay <- function(object, target.assay = "target",
+                           rna.assay = "RNA",
+                           df.grn = NULL){
+    
+
+    df.genes <- split(df.grn$gene,df.grn$tf)
+    object <- AddModuleScore(object, features = df.genes,
+                             assay=rna.assay,
+                     name = "tf_target_")
+
+    target_gex <- object@meta.data %>%
+        as.data.frame() %>%
+        dplyr::select(contains("tf_target_"))
+
+    colnames(target_gex) <- names(df.genes)
+
+    object[["target"]] <- CreateAssayObject(data = t(target_gex))
+
+    return(object)
+
+}
+
+BMMC.coembed.paired.trajectory <- AddTargetAssay(object = BMMC.coembed.paired.trajectory, df.grn = df.grn2)
+
+PseudotimePlot(BMMC.coembed.paired.trajectory, "JDP2")
+```
+
+```{r}
+SeuratDisk::SaveH5Seurat(BMMC.coembed.paired.trajectory, "/mnt/c/Users/wolf-/Documents/Forschung/Github Public Repository/scAML/BMMC.coembed.paired.trajectory")
+BMMC.coembed.paired <- SeuratDisk::LoadH5Seurat("/mnt/c/Users/wolf-/Documents/Forschung/Github Public Repository/scAML/BMMC.coembed.paired.h5seurat")
+```
